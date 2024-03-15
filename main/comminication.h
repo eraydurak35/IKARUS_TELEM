@@ -12,6 +12,7 @@
 #define MSG1_HEADER 0xFF
 #define MSG2_HEADER 0xFE
 #define MSG3_HEADER 0xFD
+#define MSG4_HEADER 0xFC
 
 void comminication_init();
 void send_telem_to_pc();
