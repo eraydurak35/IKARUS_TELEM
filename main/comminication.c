@@ -7,13 +7,38 @@
 #include "uart.h"
 #include "driver/gpio.h"
 
+
+typedef struct {
+    uint16_t frame_head;
+    uint16_t duration;
+    uint8_t destination_address[6];
+    uint8_t source_address[6];
+    uint8_t broadcast_address[6];
+    uint16_t sequence_control;
+
+    uint8_t category_code;
+    uint8_t organization_identifier[3]; // 0x18fe34
+    uint8_t random_values[4];
+    struct {
+        uint8_t element_id;                 // 0xdd
+        uint8_t lenght;                     //
+        uint8_t organization_identifier[3]; // 0x18fe34
+        uint8_t type;                       // 4
+        uint8_t version;
+        uint8_t body[0];
+    } vendor_specific_content;
+} __attribute__ ((packed)) espnow_frame_format_t;
+
+
 static const uint8_t drone_mac_address[6] = {0x04, 0x61, 0x05, 0x05, 0x3A, 0xE4};
 static esp_now_peer_info_t peerInfo;
 
 static uint8_t telemetry_size = 0;
 static uint8_t send_to_pc_buffer[255];
 static uint8_t send_to_drone_buffer[255];
-static uint8_t packet_delivery = 0;
+static uint8_t RSSI = 0;
+static uint8_t is_new_packet_received = 0;
+static uint8_t packet_drop_ratio = 0;
 
 static void espnow_receive_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len);
 static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status);
@@ -42,28 +67,10 @@ void comminication_init()
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
 
-/*     wifi_init_config_t my_config = WIFI_INIT_CONFIG_DEFAULT();
-    my_config.ampdu_tx_enable = 0;
-    esp_wifi_init(&my_config);
-    esp_wifi_start();
-
-    esp_wifi_set_channel(CHANNEL, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_internal_set_fix_rate(WIFI_IF_STA, true, DATARATE);
-
-    esp_now_init();
-    esp_now_register_send_cb(espnow_send_cb);
-    esp_now_register_recv_cb(espnow_receive_cb);
-    memcpy(peerInfo.peer_addr, drone_mac_address, 6);
-    peerInfo.channel = 0;
-    peerInfo.encrypt = false;
-    esp_now_add_peer(&peerInfo); */
-
     gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_2, 0);
     uart_begin(UART_NUM_0, 921600, 1, 3, UART_PARITY_DISABLE);
 }
-
-
 
 void parse_pc_data(uart_data_t *recv)
 {
@@ -72,6 +79,9 @@ void parse_pc_data(uart_data_t *recv)
     static uint8_t msg2_header_found;
     static uint8_t msg3_header_found;
     static uint8_t msg4_header_found;
+    static uint8_t msg5_header_found;
+    static uint8_t msg6_header_found;
+    static uint8_t msg7_header_found;
     static uint8_t size = 0;
     static uint8_t is_size_determined = 0;
     static uint8_t counter = 1;
@@ -178,17 +188,87 @@ void parse_pc_data(uart_data_t *recv)
                 }
             }
         }
+        else if (msg5_header_found == 1)
+        {
+            if (is_size_determined == 0)
+            {
+                size = recv->data[i];
+                is_size_determined = 1;
+                send_to_drone_buffer[0] = 0xfb;
+            }
+            else
+            {
+                send_to_drone_buffer[counter++] = recv->data[i];
+
+                if (counter == size+1)
+                {
+                    if (checksum_verify(send_to_drone_buffer+1, size) == 1)
+                    {
+                        esp_now_send(drone_mac_address, send_to_drone_buffer, size - 2);
+                    }
+                    counter = 1;
+                    msg5_header_found = 0;
+                    is_size_determined = 0;
+                }
+            }
+        }
+        else if (msg6_header_found == 1)
+        {
+            if (is_size_determined == 0)
+            {
+                size = recv->data[i];
+                is_size_determined = 1;
+                send_to_drone_buffer[0] = 0xfa;
+            }
+            else
+            {
+                send_to_drone_buffer[counter++] = recv->data[i];
+
+                if (counter == size+1)
+                {
+                    if (checksum_verify(send_to_drone_buffer+1, size) == 1)
+                    {
+                        esp_now_send(drone_mac_address, send_to_drone_buffer, size - 2);
+                    }
+                    counter = 1;
+                    msg6_header_found = 0;
+                    is_size_determined = 0;
+                }
+            }
+        }
+        else if (msg7_header_found == 1)
+        {
+            if (is_size_determined == 0)
+            {
+                size = recv->data[i];
+                is_size_determined = 1;
+                send_to_drone_buffer[0] = 0xf9;
+            }
+            else
+            {
+                send_to_drone_buffer[counter++] = recv->data[i];
+
+                if (counter == size+1)
+                {
+                    if (checksum_verify(send_to_drone_buffer+1, size) == 1)
+                    {
+                        esp_now_send(drone_mac_address, send_to_drone_buffer, size - 2);
+                    }
+                    counter = 1;
+                    msg7_header_found = 0;
+                    is_size_determined = 0;
+                }
+            }
+        }
 
         else if (recv->data[i] == MSG1_HEADER)
         {
             msg1_header_found = 1;
         }
-
         else if (recv->data[i] == MSG2_HEADER)
         {
             msg2_header_found = 1;
         }
-
         else if (recv->data[i] == MSG3_HEADER)
         {
             msg3_header_found = 1;
@@ -197,35 +277,72 @@ void parse_pc_data(uart_data_t *recv)
         {
             msg4_header_found = 1;
         }
+        else if (recv->data[i] == MSG5_HEADER)
+        {
+            msg5_header_found = 1;
+        }
+        else if (recv->data[i] == MSG6_HEADER)
+        {
+            msg6_header_found = 1;
+        }
+        else if (recv->data[i] == MSG7_HEADER)
+        {
+            msg7_header_found = 1;
+        }
     }
 }
-
 
 void send_telem_to_pc()
 {
     if (telemetry_size > 0)
     {
         send_to_pc_buffer[0] = 0xFF;
-        send_to_pc_buffer[1] = telemetry_size + 4;
-        send_to_pc_buffer[2] = packet_delivery;
+        send_to_pc_buffer[1] = telemetry_size + 5;
+        send_to_pc_buffer[2] = RSSI;
+        send_to_pc_buffer[3] = packet_drop_ratio;
+
         uint8_t cs1, cs2;
-        checksum_generate(send_to_pc_buffer + 2, telemetry_size + 1, &cs1, &cs2);
+        checksum_generate(send_to_pc_buffer + 2, telemetry_size + 2, &cs1, &cs2);
 
-        send_to_pc_buffer[telemetry_size + 6 - 3] = cs1;
-        send_to_pc_buffer[telemetry_size + 6 - 2] = cs2;
-        send_to_pc_buffer[telemetry_size + 6 - 1] = 0x69;
-        uart_write(UART_NUM_0, send_to_pc_buffer, telemetry_size + 6);
+        send_to_pc_buffer[telemetry_size + 7 - 3] = cs1;
+        send_to_pc_buffer[telemetry_size + 7 - 2] = cs2;
+        send_to_pc_buffer[telemetry_size + 7 - 1] = 0x69;
+        uart_write(UART_NUM_0, send_to_pc_buffer, telemetry_size + 7);
     }
-
 }
 
+void calculate_packet_drop_ratio() // 10Hz
+{
+    static uint8_t call_count = 0; // Counter to track the number of times the function is called in a second
+    static uint8_t missed_packet_count = 0;
+
+    if (!is_new_packet_received) missed_packet_count++;
+    else is_new_packet_received = 0;
+    
+    call_count++;
+    
+    if (call_count >= 20) 
+    {
+        // Reset counters for the next second
+        packet_drop_ratio = missed_packet_count * 5;
+        missed_packet_count = 0;
+        call_count = 0;
+    }
+}
 
 static void espnow_receive_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len)
 {
+    is_new_packet_received = 1;
+
+    wifi_promiscuous_pkt_t* promiscuous_pkt = (wifi_promiscuous_pkt_t*)(data - sizeof (wifi_pkt_rx_ctrl_t) - sizeof (espnow_frame_format_t));
+    wifi_pkt_rx_ctrl_t* rx_ctrl = &promiscuous_pkt->rx_ctrl;
+
+    if (rx_ctrl->rssi > 0) RSSI = 0;
+    else RSSI += ((uint8_t)(rx_ctrl->rssi * -1) - RSSI) * 0.2f;
 
     if (data[0] == 0xFF)
     {
-        memcpy(send_to_pc_buffer + 3, data + 1, len - 1);
+        memcpy(send_to_pc_buffer + 4, data + 1, len - 1);
         telemetry_size = len - 1;
     }
 
@@ -256,6 +373,19 @@ static void espnow_receive_cb(const esp_now_recv_info_t *recv_info, const uint8_
         wp_buffer[len + 1 + 2] = 0x69;
         uart_write(UART_NUM_0, wp_buffer, sizeof(wp_buffer));
     }
+    else if (data[0] == 0xFC)
+    {
+        uint8_t motor_test_result_buffer[len + 1 + 3];
+        motor_test_result_buffer[0] = 0xFC;
+        motor_test_result_buffer[1] = len - 1 + 3;
+        memcpy(motor_test_result_buffer + 2, data + 1, len - 1);
+        uint8_t cs1, cs2;
+        checksum_generate(motor_test_result_buffer + 2, len - 1, &cs1, &cs2);
+        motor_test_result_buffer[len + 1 + 0] = cs1;
+        motor_test_result_buffer[len + 1 + 1] = cs2;
+        motor_test_result_buffer[len + 1 + 2] = 0x69;
+        uart_write(UART_NUM_0, motor_test_result_buffer, sizeof(motor_test_result_buffer));
+    }
 
     static uint8_t led_state = 0;
     if (led_state == 0)
@@ -271,20 +401,7 @@ static void espnow_receive_cb(const esp_now_recv_info_t *recv_info, const uint8_
 }
 static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
-    static uint8_t delivered_packet_counter = 0;
-    static uint8_t packet_counter = 0;
-
-    packet_counter++;
-    if (status == ESP_NOW_SEND_SUCCESS) delivered_packet_counter++;
-
-    if (packet_counter == 40)
-    {
-        packet_delivery = delivered_packet_counter / 0.4;
-        delivered_packet_counter = 0;
-        packet_counter = 0;
-    }
 }
-
 
 
 static void checksum_generate(uint8_t *data, uint8_t size, uint8_t *cs1, uint8_t *cs2)

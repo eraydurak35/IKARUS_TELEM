@@ -26,6 +26,7 @@ void task_1(void *pvParameters)
         if (xTaskNotifyWait(0, ULONG_MAX, &notification, portMAX_DELAY) == pdTRUE)
         {
             send_telem_to_pc();
+            calculate_packet_drop_ratio();
         }
     }
 }
