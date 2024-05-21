@@ -111,8 +111,6 @@ void parse_pc_data(uart_data_t *recv)
                     is_size_determined = 0;
                 }
             }
-            
-            
         }
         else if (msg2_header_found == 1)
         {
@@ -137,8 +135,6 @@ void parse_pc_data(uart_data_t *recv)
                     is_size_determined = 0;
                 }
             }
-
-
         }
         else if (msg3_header_found == 1)
         {
@@ -338,7 +334,13 @@ static void espnow_receive_cb(const esp_now_recv_info_t *recv_info, const uint8_
     wifi_pkt_rx_ctrl_t* rx_ctrl = &promiscuous_pkt->rx_ctrl;
 
     if (rx_ctrl->rssi > 0) RSSI = 0;
-    else RSSI += ((uint8_t)(rx_ctrl->rssi * -1) - RSSI) * 0.2f;
+    else
+    {
+        float unf_rssi = rx_ctrl->rssi * -1;
+        static float filt_rssi = 0;
+        filt_rssi += (unf_rssi - filt_rssi) * 0.4f;
+        RSSI = (uint8_t)(filt_rssi);
+    } 
 
     if (data[0] == 0xFF)
     {
